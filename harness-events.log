@@ -1,0 +1,17 @@
+{"ts":"2026-09-15T12:49:12.928Z","tool":"propose_file_update","scope":"file-access","derivedFromUntrusted":false,"ok":true}
+{"ts":"2026-09-15T12:55:59.272Z","tool":"fetch_url","scope":"research","derivedFromUntrusted":false,"ok":false,"error":"DENIED: host not allowlisted or resolves to a private range"}
+{"ts":"2026-09-15T12:56:24.929Z","tool":"fetch_url","event":"content_scanned","flagged":false}
+{"ts":"2026-09-15T12:56:24.930Z","tool":"fetch_url","scope":"research","derivedFromUntrusted":false,"ok":true}
+{"ts":"2026-09-15T12:56:25.809Z","tool":"send_email","scope":"customer-support","derivedFromUntrusted":true,"ok":false,"error":"DENIED: privileged call traced to untrusted source"}
+{"ts":"2026-09-15T12:58:44.340Z","tool":"read_file","event":"content_scanned","flagged":true,"reason":"matched: /ignore\\s+(all\\s+)?(previous|prior)\\s+(instructions|constraints)/i"}
+{"ts":"2026-09-15T12:58:44.342Z","tool":"read_file","scope":"file-access","derivedFromUntrusted":false,"ok":true}
+{"ts":"2026-09-15T13:00:26.754Z","tool":"read_file","event":"content_scanned","flagged":false}
+{"ts":"2026-09-15T13:00:26.756Z","tool":"read_file","scope":"file-access","derivedFromUntrusted":false,"ok":true}
+{"ts":"2026-09-15T13:03:36.188Z","tool":"fetch_url","event":"content_scanned","flagged":false}
+{"ts":"2026-09-15T13:03:36.189Z","tool":"fetch_url","scope":"research","derivedFromUntrusted":false,"ok":true}
+{"ts":"2026-09-15T13:03:36.932Z","tool":"fetch_url","event":"content_scanned","flagged":false}
+{"ts":"2026-09-15T13:03:36.932Z","tool":"fetch_url","scope":"research","derivedFromUntrusted":true,"ok":true}
+{"ts":"2026-09-15T13:03:39.509Z","tool":"fetch_url","scope":"research","derivedFromUntrusted":true,"ok":false,"error":"DENIED: budget exhausted for fetch_url"}
+{"ts":"2026-09-15T13:05:35.347Z","tool":"read_file","scope":"file-access","derivedFromUntrusted":false,"ok":false,"error":"HALTED: kill switch active"}
+{"ts":"2026-09-15T13:06:04.293Z","tool":"read_file","event":"content_scanned","flagged":false}
+{"ts":"2026-09-15T13:06:04.294Z","tool":"read_file","scope":"file-access","derivedFromUntrusted":false,"ok":true}

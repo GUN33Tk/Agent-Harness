@@ -1,0 +1,2 @@
+This is a legitimate file the agent is allowed to read.
+

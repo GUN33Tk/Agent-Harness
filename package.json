@@ -1,0 +1,17 @@
+{
+  "name": "agent-harness",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/run-agent.js",
+    "test:scenarios": "node dist/test/scenarios.test.js"
+  },
+  "dependencies": {
+    "groq-sdk": "^1.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.5.0"
+  }
+}
