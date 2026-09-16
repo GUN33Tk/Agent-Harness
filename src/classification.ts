@@ -25,6 +25,10 @@ class SensitiveDataTracker {
     return this.secrets.has(secret.trim());
   }
 
+  getSecrets(): Set<string> {
+    return new Set(this.secrets);
+  }
+
   containsAnySecret(payload: string): { leaked: boolean; matchedSecretSnippet?: string } {
     if (!payload || this.secrets.size === 0) {
       return { leaked: false };

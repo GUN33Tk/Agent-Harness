@@ -1,4 +1,5 @@
 import { Provenance, DataClassification } from "../provenance";
+import { SessionSecurityContext } from "../session";
 
 export type AgentPhase = "PLANNING" | "RESEARCH" | "EXECUTION" | "APPROVAL";
 
@@ -23,6 +24,7 @@ export interface NetworkRequest {
   purpose?: string;
   provenance: Provenance;
   dataClassification: DataClassification;
+  sessionContext?: SessionSecurityContext;
   requestSize?: number;
   body?: string;
   headers?: Record<string, string>;

@@ -59,22 +59,33 @@ All outbound HTTP/HTTPS requests route through `EgressGateway` before any TCP co
 - **DNS rebinding defense**: hostname resolved once; `http.Agent` pins socket to validated IP — eliminates TOCTOU window
 - **Redirect gating**: `redirect: "manual"`, every `Location` header fed through full validation before following
 
-### 2. Network Piggybacking Defense — Policy P-EXFIL-001 (`src/network/piggybacking-detector.ts`)
+### 2. Network Piggybacking & Transformation Defense — Policy P-EXFIL-001 (`src/network/piggybacking-detector.ts`, `src/network/transformations.ts`)
 
 Prevents an injected LLM from exfiltrating sensitive data through an *allowlisted* destination.
 
 - `SECRET` or `CONFIDENTIAL` data classification → **DENY** regardless of destination
 - `UNTRUSTED` or `MIXED` provenance with sensitive data → **DENY**
-- Scans URL query parameters and POST body for registered secret tokens
+- Scans URL query parameters and POST body for registered secret tokens across representations:
+  - **Exact token matching**
+  - **URL-encoded variants**
+  - **Base64 encoding** (standard, unpadded, and URL-safe Base64)
+  - **Hex encoding** (case-insensitive)
+- Evaluates both per-request metadata and persistent session security state (effective state = most restrictive).
 
-**Demo:** `node dist/demo/run-piggyback-demo.js` shows three scenarios: public data (ALLOW), secret exfiltration (DENY), POST body secret (DENY).
+**Demo:** `node dist/demo/run-piggyback-demo.js` demonstrates 4 scenarios:
+1. Public data → **ALLOWED**
+2. Direct secret token exfiltration → **BLOCKED** (`P-EXFIL-001`)
+3. Base64-transformed secret exfiltration → **BLOCKED** (`P-EXFIL-001`)
+4. Multi-turn session taint exfiltration → **BLOCKED** (`P-EXFIL-001`)
 
-### 3. Provenance & Taint Tracking (`src/provenance.ts`, `src/untrusted.ts`)
+### 3. Session Security Context & Persistent Taint Tracking (`src/session.ts`, `src/provenance.ts`, `src/untrusted.ts`)
 
-- Lattice model: `TRUSTED + UNTRUSTED = MIXED`, `UNTRUSTED + UNTRUSTED = UNTRUSTED`
-- Classification lattice: `PUBLIC < INTERNAL < CONFIDENTIAL < SECRET`
-- Taint persists across multi-turn tool call chains (no single-turn reset bug)
-- Subagent outputs wrapped as `Untrusted<T>` automatically
+- **Session Security Context**: Persistent `SessionSecurityContext` per session tracking monotonic classification, provenance, and active secret tokens.
+- **Monotonic lattice model**: 
+  - Provenance: `TRUSTED < UNTRUSTED < MIXED` (taint never silently clears during a session)
+  - Classification: `PUBLIC < INTERNAL < CONFIDENTIAL < SECRET` (escalates on reading classified resources)
+- **Multi-turn taint propagation**: Tool execution updates session state; subsequent tool calls in the same session inherit taint.
+- Subagent outputs wrapped as `Untrusted<T>` automatically.
 
 ### 4. Deterministic Tool Authorization (`src/policy.ts`)
 
@@ -132,12 +143,14 @@ Prevents an injected LLM from exfiltrating sensitive data through an *allowliste
 ```
 src/
   boundary.ts            # Central enforcement pipeline
+  session.ts             # SessionSecurityContext & SessionManager (monotonic taint & secrets)
   network/
     egress-gateway.ts    # Single outbound HTTP enforcement point
     ip-utils.ts          # IPv4/IPv6 CIDR blocklist validation
     dns.ts               # DNS resolution + IP-pinning agent
     egress-policy.ts     # Domain/port/scheme/phase policy
     piggybacking-detector.ts  # P-EXFIL-001 exfiltration defense
+    transformations.ts   # Base64/Hex/URL transformation detection
     network-types.ts     # Shared types
   provenance.ts          # Taint lattice & data classification
   classification.ts      # Resource classification helpers
@@ -160,10 +173,12 @@ src/
 test/
   scenarios.test.ts      # 21 integration scenario tests (all PASS)
   adversarial.test.ts    # 44 adversarial security tests (all PASS)
+  integration.test.ts    # 8 full boundary pipeline integration tests (all PASS)
+  session-taint.test.ts  # 26 session taint & transformation tests (all PASS)
 
 demo/
   mock-server.ts         # Deterministic test HTTP server
-  run-piggyback-demo.ts  # Piggybacking attack demonstration
+  run-piggyback-demo.ts  # Piggybacking & transformation attack demo (4 scenarios)
   public-data.txt        # Demo public resource
   secret.txt             # Demo classified resource
 
@@ -186,11 +201,16 @@ npm install
 node node_modules/typescript/bin/tsc --noEmit   # type check
 node node_modules/typescript/bin/tsc             # build
 
-# Run all tests
+# Run all test suites (99 total tests)
+npm test
+
+# Or run individual test suites
 node dist/test/scenarios.test.js      # 21 scenario tests
 node dist/test/adversarial.test.js    # 44 adversarial security tests
+node dist/test/integration.test.js    # 8 boundary pipeline integration tests
+node dist/test/session-taint.test.js  # 26 session taint & transformation tests
 
-# Run the piggybacking demo
+# Run the piggybacking demo (4 scenarios)
 node dist/demo/run-piggyback-demo.js
 ```
 
@@ -229,14 +249,19 @@ Requires `CAP_SYS_ADMIN` for `unshare(CLONE_NEWNET)`. In Docker: `--cap-add=SYS_
 ## Test Results
 
 ```
-scenarios.test.ts:    21/21 PASS (SSRF, injection, budget, kill switch, files, MCP, memory, subagent)
-adversarial.test.ts:  44/44 PASS (SSRF ×15, piggybacking ×9, authorization ×5, MCP ×5, files ×5, kill switch ×5)
+scenarios.test.ts:      21/21 PASS (SSRF, injection, budget, kill switch, files, MCP, memory, subagent)
+adversarial.test.ts:    44/44 PASS (SSRF ×15, piggybacking ×9, authorization ×5, MCP ×5, files ×5, kill switch ×5)
+integration.test.ts:     8/8  PASS (Full boundary pipeline: policy, schema, provenance, gateway, kill switch, budget)
+session-taint.test.ts:  26/26 PASS (Session lifecycle, monotonic classification/trust, multi-turn taint, Base64/Hex transforms)
+-------------------------------------------------------------------------------------------------------------
+Total:                  99/99 passing (98 runnable on Windows, 1 Linux sandbox test skipped on Windows)
 ```
 
 ---
 
 ## Honest Limitations
 
+- **No General Semantic Exfiltration Detection**: This project does not provide general semantic exfiltration detection (e.g. natural language paraphrasing, steganography, or LLM summarization of secrets). It deterministically prevents exfiltration via exact matches, URL encoding, Base64 (standard, unpadded, URL-safe), and Hex encoding of tracked sensitive data tokens and enforces monotonic session-level classification/provenance policies.
 - `sanitizer.ts` is a heuristic tripwire, not a security boundary. The real prompt-injection defense is the structural `Untrusted<T>` provenance tracking.
 - The C++ sandbox demonstrates the correct architecture (seccomp + namespaces + resource limits) but lacks signal handling and cleanup on partial failure. Production workloads should use gVisor or Firecracker.
 - `ModelDrivenCaller` reflects the general shape of tool-calling APIs. Verify against the exact SDK version before deploying.

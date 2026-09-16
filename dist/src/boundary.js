@@ -9,12 +9,15 @@ const schema_validator_1 = require("./schema-validator");
 const security_events_1 = require("./security-events");
 const untrusted_1 = require("./untrusted");
 const sanitizer_1 = require("./sanitizer");
+const session_1 = require("./session");
+const classification_1 = require("./classification");
 class ExecutionBoundary {
-    constructor(registry, killSwitch, budget, egressAllowlistOrGateway, customPolicies) {
+    constructor(registry, killSwitch, budget, egressAllowlistOrGateway, customPolicies, sessionManager) {
         this.registry = registry;
         this.killSwitch = killSwitch;
         this.budget = budget;
         this.policies = customPolicies ?? policy_1.DEFAULT_TOOL_POLICIES;
+        this.sessionManager = sessionManager ?? new session_1.SessionManager();
         if (egressAllowlistOrGateway instanceof egress_gateway_1.EgressGateway) {
             this.gateway = egressAllowlistOrGateway;
         }
@@ -26,6 +29,9 @@ class ExecutionBoundary {
     }
     getGateway() {
         return this.gateway;
+    }
+    getSessionManager() {
+        return this.sessionManager;
     }
     async run(call) {
         const sessionId = call.sessionId ?? "session-default";
@@ -49,16 +55,22 @@ class ExecutionBoundary {
             this.recordAndEmit(call, result, "KILL_SWITCH_TRIGGERED", "CRITICAL");
             return result;
         }
-        // ── 2. Resolve Provenance and Classification ─────────────────────────────
-        // Structured provenance is carried through the full call chain.
-        // derivedFromUntrusted is kept for backwards compatibility but the structured
-        // Provenance object is always the authoritative source.
-        const effectiveProvenance = call.provenance ?? (0, provenance_1.createProvenance)(call.derivedFromUntrusted ? "UNTRUSTED" : "TRUSTED", call.dataClassification ?? "PUBLIC", call.name);
-        const effectiveClassification = call.dataClassification ?? effectiveProvenance.classification ?? "PUBLIC";
+        // ── 2. Resolve Monotonic Session Security Context ────────────────────────
+        // Retrieve isolated session security context
+        const session = this.sessionManager.getSession(sessionId);
+        // Ingest explicit call taint into session context if provided
+        if (call.provenance || call.dataClassification || call.derivedFromUntrusted) {
+            const explicitProvenance = call.provenance ?? (0, provenance_1.createProvenance)(call.derivedFromUntrusted ? "UNTRUSTED" : "TRUSTED", call.dataClassification ?? "PUBLIC", call.name);
+            this.sessionManager.updateTaint(sessionId, explicitProvenance, call.dataClassification ?? explicitProvenance.classification, call.name);
+        }
+        // Effective state is the more restrictive monotonic combination of call and session context
+        const effectiveClassification = (0, provenance_1.combineClassification)(call.dataClassification ?? "PUBLIC", session.classification);
+        const rawCallProvenance = call.provenance ?? (0, provenance_1.createProvenance)(call.derivedFromUntrusted ? "UNTRUSTED" : "TRUSTED", effectiveClassification, call.name);
+        const effectiveProvenance = (0, provenance_1.combineProvenance)(rawCallProvenance, session.provenance);
         // ── 3. Tool Authorization Policy ─────────────────────────────────────────
         // Uses policy.ts exclusively — no hardcoded PRIVILEGED_TOOLS set here.
         // policy.ts defines risk, allowedScopes, blockUntrustedProvenance, requiresApproval, etc.
-        const authDecision = (0, policy_1.evaluateToolAuthorization)(call.name, call.scope, call.derivedFromUntrusted ?? (effectiveProvenance.trust !== "TRUSTED"), this.policies, call.agentPhase);
+        const authDecision = (0, policy_1.evaluateToolAuthorization)(call.name, call.scope, effectiveProvenance, this.policies, call.agentPhase);
         if (authDecision.decision !== "ALLOW") {
             result = {
                 tool: call.name,
@@ -116,10 +128,8 @@ class ExecutionBoundary {
         }
         // ── 6. Tool Execution Dispatch ───────────────────────────────────────────
         // fetch_url is dispatched directly through boundary's EgressGateway so that
-        // provenance and classification from the call context are forwarded to the
-        // network enforcement layer. This is the ONLY approved network execution path.
-        // The tool's own execute() is not used for fetch_url to prevent a second
-        // gateway instance from operating with different (or missing) provenance.
+        // provenance and classification from the call and session context are forwarded
+        // to the network enforcement layer.
         if (call.name === "fetch_url") {
             const rawUrl = String(call.args.url ?? "");
             const netReq = {
@@ -130,6 +140,7 @@ class ExecutionBoundary {
                 purpose: "fetch_url tool execution",
                 provenance: effectiveProvenance,
                 dataClassification: effectiveClassification,
+                sessionContext: session,
                 signal: this.killSwitch.signal,
             };
             try {
@@ -142,6 +153,8 @@ class ExecutionBoundary {
                     flagged: scan.flagged,
                     reason: scan.reason,
                 });
+                // Update session context: incoming web content is UNTRUSTED + PUBLIC
+                this.sessionManager.updateTaint(sessionId, (0, provenance_1.createProvenance)("UNTRUSTED", "PUBLIC", rawUrl), "PUBLIC", rawUrl);
                 result = {
                     tool: call.name,
                     ok: true,
@@ -159,11 +172,19 @@ class ExecutionBoundary {
             }
         }
         else {
-            // Standard local / sandboxed tool call via registry.
-            // Registry.call() still performs its own validation, but boundary's
-            // schema check above already validated args — registry is a secondary
-            // defence-in-depth layer for direct registry.call() callers.
+            // Standard local / sandboxed tool call via registry
             result = await this.registry.call(call.name, call.args, call.scope);
+            // Post-execution taint update for sensitive resource reads
+            if (result.ok && call.name === "read_file" && call.args.path) {
+                const filePath = String(call.args.path);
+                const fileClass = (0, classification_1.classifyPath)(filePath);
+                if (fileClass === "SECRET" || fileClass === "CONFIDENTIAL") {
+                    this.sessionManager.updateTaint(sessionId, (0, provenance_1.createProvenance)("UNTRUSTED", fileClass, filePath), fileClass, filePath, result.output);
+                }
+            }
+            else if (result.ok && result.provenance) {
+                this.sessionManager.updateTaint(sessionId, result.provenance, result.provenance.classification, call.name, result.output);
+            }
         }
         // ── 7. Record and Emit Final Security Event ──────────────────────────────
         this.recordAndEmit(call, result, "POLICY_EVALUATION", result.ok ? "LOW" : "HIGH");
