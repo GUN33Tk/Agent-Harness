@@ -9,6 +9,7 @@ export interface SecurityEvent {
   type:
     | "TOOL_REQUEST"
     | "POLICY_EVALUATION"
+    | "SCHEMA_VALIDATION_FAILURE"
     | "NETWORK_REQUEST"
     | "REQUEST_BLOCKED"
     | "SSRF_DETECTION"

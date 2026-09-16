@@ -5,9 +5,10 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/run-agent.js",
-    "test": "node dist/test/scenarios.test.js && node dist/test/adversarial.test.js",
+    "test": "node dist/test/scenarios.test.js && node dist/test/adversarial.test.js && node dist/test/integration.test.js",
     "test:scenarios": "node dist/test/scenarios.test.js",
     "test:adversarial": "node dist/test/adversarial.test.js",
+    "test:integration": "node dist/test/integration.test.js",
     "demo:piggyback": "node dist/demo/run-piggyback-demo.js"
   },
   "dependencies": {
