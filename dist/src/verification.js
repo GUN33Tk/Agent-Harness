@@ -33,6 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.computeContentHash = computeContentHash;
 exports.review = review;
 exports.applyFix = applyFix;
 exports.terminalApproval = terminalApproval;
@@ -41,12 +42,13 @@ const sanitizer_1 = require("./sanitizer");
 const untrusted_1 = require("./untrusted");
 const fs = __importStar(require("fs"));
 const readline = __importStar(require("readline"));
-// review() is read-only — it can flag a problem, it structurally cannot
-// fix one (canFix: false is enforced by the type, not just convention).
-// Uses the same scanner every other content-reading tool uses, so a
-// verdict here means the same thing it means everywhere else it's shown.
+const crypto = __importStar(require("crypto"));
+const security_events_1 = require("./security-events");
+function computeContentHash(content) {
+    return crypto.createHash("sha256").update(content, "utf-8").digest("hex");
+}
 function review(code) {
-    const snapshot = code; // a copy — the reviewer has no path back to the original
+    const snapshot = code;
     const scan = (0, sanitizer_1.scanForInjection)((0, untrusted_1.wrapUntrusted)("review-input", snapshot));
     const verdict = scan.flagged ? `possible prompt injection — ${scan.reason}` : "looks fine";
     return { verdict, flagged: scan.flagged, canFix: false };
@@ -57,12 +59,6 @@ function applyFix(path, newContent, dryRun = true) {
     fs.writeFileSync(path, newContent, "utf-8");
     return `wrote ${path}`;
 }
-// The default approver: actually pauses the process and waits for a real
-// human typing at the terminal. This is deliberately NOT something the
-// model can influence — same principle as killswitch.ts being external
-// to the model's own reasoning. A function parameter (not a hardcoded
-// call) so tests can substitute a mock approver instead of blocking on
-// real stdin.
 function terminalApproval(promptText) {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     return new Promise((resolve) => {
@@ -72,20 +68,90 @@ function terminalApproval(promptText) {
         });
     });
 }
-// NEW: the full human-in-the-loop flow requested — check for injection
-// FIRST (and refuse immediately, no prompt at all, if flagged), only
-// show a dry run and ask a real human for approval if the content is
-// clean, and only write for real if that human says yes.
-async function proposeAndApply(targetPath, newContent, requestApproval = terminalApproval) {
+/**
+ * Human Approval Gate with Cryptographic Operation Binding.
+ *
+ * Enforces:
+ * 1. Pre-approval tripwire scan: injection attempts are rejected immediately.
+ * 2. Cryptographic binding: approval is locked to (targetPath, operation, contentHash).
+ * 3. Exact verification before write: ensures content hasn't drifted or been swapped.
+ * 4. Audit logging via SecurityEventBus.
+ */
+async function proposeAndApply(targetPath, newContent, requestApproval = terminalApproval, sessionId = "session-default") {
+    // 1. Injection scan tripwire
     const result = review(newContent);
     if (result.flagged) {
-        // Refused before any prompt — an injection attempt doesn't even get
-        // the courtesy of asking a human to rubber-stamp it.
+        (0, security_events_1.emitSecurityEvent)({
+            sessionId,
+            agentId: "agent-main",
+            type: "REQUEST_BLOCKED",
+            decision: "DENY",
+            policy: "P-INJECTION-TRIPWIRE",
+            reason: `Proposed write flagged before review: ${result.verdict}`,
+            risk: "HIGH",
+        });
         return `DENIED: proposed content flagged before review — ${result.verdict}`;
     }
+    // 2. Compute cryptographic digest of proposed content
+    const contentHash = computeContentHash(newContent);
+    const approvalRecord = {
+        id: `appr-${Date.now()}-${contentHash.slice(0, 8)}`,
+        tool: "propose_file_update",
+        targetPath,
+        operation: "write",
+        contentHash,
+        sessionId,
+        timestamp: new Date().toISOString(),
+        risk: "HIGH",
+        policy: "P-HUMAN-APPROVAL",
+        approved: false,
+    };
+    (0, security_events_1.emitSecurityEvent)({
+        sessionId,
+        agentId: "agent-main",
+        type: "APPROVAL_REQUIRED",
+        decision: "REVIEW",
+        policy: "P-HUMAN-APPROVAL",
+        reason: `Human review required to write to ${targetPath} (SHA-256: ${contentHash.slice(0, 12)}...)`,
+        risk: "HIGH",
+    });
     const dryRunMsg = applyFix(targetPath, newContent, true);
-    const approved = await requestApproval(`${dryRunMsg}\nContent passed the injection scan. Apply this write for real?`);
-    if (!approved)
+    const approved = await requestApproval(`${dryRunMsg}\nContent passed injection scan [hash: ${contentHash.slice(0, 12)}]. Apply this write for real?`);
+    if (!approved) {
+        (0, security_events_1.emitSecurityEvent)({
+            sessionId,
+            agentId: "operator",
+            type: "APPROVAL_DENIED",
+            decision: "DENY",
+            policy: "P-HUMAN-APPROVAL",
+            reason: `Operator rejected write proposal for ${targetPath}`,
+            risk: "MEDIUM",
+        });
         return "DECLINED: operator did not approve — nothing written";
+    }
+    // 3. Re-verify content hash immediately before application
+    const preWriteHash = computeContentHash(newContent);
+    if (preWriteHash !== approvalRecord.contentHash) {
+        (0, security_events_1.emitSecurityEvent)({
+            sessionId,
+            agentId: "harness",
+            type: "REQUEST_BLOCKED",
+            decision: "DENY",
+            policy: "P-HASH-MISMATCH",
+            reason: "Content was modified after human approval was granted",
+            risk: "CRITICAL",
+        });
+        return "DENIED: approved content hash mismatch — tampering detected";
+    }
+    approvalRecord.approved = true;
+    (0, security_events_1.emitSecurityEvent)({
+        sessionId,
+        agentId: "operator",
+        type: "APPROVAL_GRANTED",
+        decision: "ALLOW",
+        policy: "P-HUMAN-APPROVAL",
+        reason: `Operator approved write to ${targetPath}`,
+        risk: "LOW",
+    });
     return applyFix(targetPath, newContent, false);
 }

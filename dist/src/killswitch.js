@@ -35,19 +35,63 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.KillSwitch = void 0;
 const fs = __importStar(require("fs"));
+const security_events_1 = require("./security-events");
 class KillSwitch {
     constructor(flagPath) {
         this.flagPath = flagPath;
+        this.abortController = new AbortController();
+        this.state = "ACTIVE";
+        if (fs.existsSync(this.flagPath)) {
+            this.state = "HALTED";
+            this.abortController.abort("kill switch flag pre-exists on disk");
+        }
+    }
+    get signal() {
+        return this.abortController.signal;
+    }
+    getState() {
+        return this.isSet() ? "HALTED" : "ACTIVE";
     }
     isSet() {
-        return fs.existsSync(this.flagPath); // lives on disk, outside the model's own context
+        if (this.state === "HALTED")
+            return true;
+        if (fs.existsSync(this.flagPath)) {
+            this.state = "HALTED";
+            return true;
+        }
+        return false;
     }
-    trigger() {
-        fs.writeFileSync(this.flagPath, "halted");
+    trigger(reason = "Manual kill switch operator intervention") {
+        this.state = "HALTED";
+        try {
+            fs.writeFileSync(this.flagPath, "halted");
+        }
+        catch {
+            // Best-effort flag write
+        }
+        // Abort in-flight operations (network, child processes, model calls)
+        this.abortController.abort(reason);
+        (0, security_events_1.emitSecurityEvent)({
+            sessionId: "global",
+            agentId: "operator",
+            type: "KILL_SWITCH_TRIGGERED",
+            decision: "DENY",
+            policy: "P-KILL-SWITCH",
+            reason: `Kill switch triggered: ${reason}`,
+            risk: "CRITICAL",
+        });
     }
     reset() {
-        if (fs.existsSync(this.flagPath))
-            fs.unlinkSync(this.flagPath);
+        this.state = "ACTIVE";
+        this.abortController = new AbortController();
+        if (fs.existsSync(this.flagPath)) {
+            try {
+                fs.unlinkSync(this.flagPath);
+            }
+            catch {
+                // Best-effort cleanup
+            }
+        }
     }
 }
 exports.KillSwitch = KillSwitch;

@@ -94,11 +94,11 @@ Open the terminal inside VS Code (Part 1.3). Type:
 $ npm install
 ```
 
-What this does: reads `package.json`, downloads the three libraries this project needs
-(TypeScript itself, Node's type definitions, and the Anthropic SDK), and puts them in a new
-`node_modules` folder. This can take 10–60 seconds. You'll see a progress bar and then a summary
-line like `added 47 packages`. That means it worked. A wall of red text means something failed —
-usually a network issue; try it again.
+What this does: reads `package.json`, downloads the libraries this project needs (TypeScript,
+type definitions, `ipaddr.js` for IP validation, and `ajv` for JSON Schema validation), and puts
+them in a new `node_modules` folder. This can take 10–60 seconds. You'll see a progress bar and
+then a summary line like `added N packages`. That means it worked. A wall of red text means
+something failed — usually a network issue; try it again.
 
 ---
 
@@ -122,38 +122,65 @@ $ npx tsc
 Same check, but this time it actually writes runnable JavaScript into a new `dist/` folder. Also
 silent on success.
 
-### 4.3 Run the real test suite
+### 4.3 Run the scenario test suite
 
 ```
 $ node dist/test/scenarios.test.js
 ```
 
-This is the important one. It runs 18 real security scenarios against the actual harness code —
-no mocking, no pretending. You should see a wall of lines starting with `PASS:`, ending in:
+Runs 21 real security scenarios against the actual harness code — no mocking, no pretending.
+You should see a wall of lines starting with `PASS:`, ending in:
 ```
 All runnable scenario tests passed.
 ```
-If you see `SKIP: C++ sandbox not built` partway through — that's expected and fine if you haven't
-done Part 6 yet. It's not a failure; the test is designed to skip gracefully when the C++ binaries
-don't exist yet.
+If you see `SKIP: C++ sandbox not built` partway through — that's expected and fine if you
+haven't done Part 6 yet.
 
-**What this one command just proved, concretely:**
-- a request to an internal cloud metadata address (`169.254.169.254`) gets denied
-- a privileged action (sending email) that traces back to something the agent merely *read* gets
-  denied, even though sending email is otherwise allowed
-- a tool called past its allowed budget gets denied on the call that exceeds it
-- an operator-set kill switch halts every subsequent call
-- an attempt to read a file outside the allowed folder (`../../../../etc/passwd`) is denied, while
-  a legitimate file inside the allowed folder is readable
-- text containing a real prompt-injection phrase gets flagged; ordinary text doesn't
-- a brand-new tool from an MCP-style server is held for review instead of auto-trusted, and a tool
-  whose description silently changes after approval gets denied
-- persisting a conclusion to permanent memory is denied if it's traced to untrusted input, and
-  allowed if it isn't
-- two different task scopes get two different credentials, so one can't be used as the other
-- a subagent's output gets wrapped the same protective way as content fetched from a webpage
+**What this proves, concretely:**
+- a request to `169.254.169.254` (cloud metadata) gets denied
+- a privileged action derived from untrusted input gets denied
+- a tool called past its budget gets denied
+- an operator kill switch halts every subsequent call
+- path traversal (`../../../../etc/passwd`) is denied; legitimate paths work
+- prompt-injection phrases are flagged; clean text is not
+- MCP tool rug-pull (description changed post-approval) is detected and denied
+- untrusted-derived memory write is denied; trusted write is allowed
+- scoped credentials are isolated — pricing scope can't use support credentials
+- subagent outputs are wrapped as untrusted automatically
 
-That's most of what we discussed, each one demonstrated by an actual assertion, not a description.
+### 4.4 Run the adversarial security test suite (44 checks)
+
+```
+$ node dist/test/adversarial.test.js
+```
+
+Runs 44 adversarial security checks covering:
+- SSRF × 15 (loopback, private CIDRs, IPv6, IPv4-mapped IPv6, redirect SSRF, non-HTTP scheme,
+  unapproved port, malformed IP)
+- Network Piggybacking × 9 (secret/confidential data egress, untrusted provenance, query param
+  secret scan, POST body scan, oversized request, rate limit, budget exhaustion)
+- Tool Authorization × 5 (scope enforcement, untrusted-derived privilege, unknown tool, schema)
+- MCP Integrity × 5 (unchanged manifest, changed description, schema, endpoint, permissions)
+- File/Approval × 5 (traversal, absolute path, URL-encoded, null byte, content hash tamper)
+- Kill Switch × 5 (AbortSignal cancellation, domain matching, phase policy, taint propagation,
+  sandbox controls)
+
+Expected output: `ALL 44 ADVERSARIAL SECURITY CHECKS PASSED SUCCESSFULLY!`
+
+### 4.5 Run the piggybacking demo
+
+```
+$ node dist/demo/run-piggyback-demo.js
+```
+
+Demonstrates the P-EXFIL-001 network piggybacking defense with three scenarios:
+1. Agent reads `public-data.txt` → sends to allowed API → **ALLOWED** (legitimate request)
+2. Agent reads `secret.txt` (SECRET) → attempts to send to allowed API → **BLOCKED** by
+   P-EXFIL-001 even though the destination domain is on the allowlist
+3. Agent embeds secret in POST body → **BLOCKED** by body inspection
+
+This is the most important demo to show live — it proves the harness defends against attacks
+that would completely bypass a naive domain allowlist.
 
 ---
 

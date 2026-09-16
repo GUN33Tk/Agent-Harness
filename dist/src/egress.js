@@ -1,17 +1,36 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.resolveAndCheckHost = resolveAndCheckHost;
-const dns_1 = require("dns");
 const url_1 = require("url");
-const PRIVATE_RANGES = ["127.", "10.", "169.254.", "192.168."];
-// CHANGED (Step 4): allowlist is now passed in from config instead of a
-// hardcoded constant, so tightening it doesn't require a code change.
+const dns_1 = require("./network/dns");
+const egress_policy_1 = require("./network/egress-policy");
+/**
+ * Backward-compatible host validator function.
+ * Uses the robust DNS resolver and IP validation engine to verify
+ * that the host is allowlisted and does not resolve to any private,
+ * loopback, link-local, or IPv4-mapped private IP address.
+ */
 async function resolveAndCheckHost(rawUrl, allowlist) {
-    const url = new url_1.URL(rawUrl);
-    if (!allowlist.has(url.hostname))
+    let url;
+    try {
+        url = new url_1.URL(rawUrl);
+    }
+    catch {
         return null;
-    const { address } = await dns_1.promises.lookup(url.hostname);
-    if (PRIVATE_RANGES.some((p) => address.startsWith(p)))
+    }
+    // Scheme must be http or https
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
         return null;
+    }
+    // Domain matching: check against allowlist using secure hostname-aware matching
+    const isAllowed = Array.from(allowlist).some((allowed) => (0, egress_policy_1.matchesDomain)(url.hostname, allowed));
+    if (!isAllowed) {
+        return null;
+    }
+    // DNS resolution & multi-record IP validation
+    const dnsResult = await (0, dns_1.resolveAndValidateHostname)(url.hostname);
+    if (!dnsResult.allowed) {
+        return null;
+    }
     return url.toString();
 }

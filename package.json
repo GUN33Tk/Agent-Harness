@@ -5,10 +5,15 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/run-agent.js",
-    "test:scenarios": "node dist/test/scenarios.test.js"
+    "test": "node dist/test/scenarios.test.js && node dist/test/adversarial.test.js",
+    "test:scenarios": "node dist/test/scenarios.test.js",
+    "test:adversarial": "node dist/test/adversarial.test.js",
+    "demo:piggyback": "node dist/demo/run-piggyback-demo.js"
   },
   "dependencies": {
-    "groq-sdk": "^1.6.0"
+    "ajv": "^8.20.0",
+    "groq-sdk": "^1.6.0",
+    "ipaddr.js": "^2.5.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

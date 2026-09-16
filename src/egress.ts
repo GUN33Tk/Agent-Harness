@@ -1,16 +1,40 @@
-import { promises as dns } from "dns";
 import { URL } from "url";
+import { resolveAndValidateHostname } from "./network/dns";
+import { matchesDomain } from "./network/egress-policy";
 
-const PRIVATE_RANGES = ["127.", "10.", "169.254.", "192.168."];
+/**
+ * Backward-compatible host validator function.
+ * Uses the robust DNS resolver and IP validation engine to verify
+ * that the host is allowlisted and does not resolve to any private,
+ * loopback, link-local, or IPv4-mapped private IP address.
+ */
+export async function resolveAndCheckHost(
+  rawUrl: string,
+  allowlist: Set<string>
+): Promise<string | null> {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return null;
+  }
 
-// CHANGED (Step 4): allowlist is now passed in from config instead of a
-// hardcoded constant, so tightening it doesn't require a code change.
-export async function resolveAndCheckHost(rawUrl: string, allowlist: Set<string>): Promise<string | null> {
-  const url = new URL(rawUrl);
-  if (!allowlist.has(url.hostname)) return null;
+  // Scheme must be http or https
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return null;
+  }
 
-  const { address } = await dns.lookup(url.hostname);
-  if (PRIVATE_RANGES.some((p) => address.startsWith(p))) return null;
+  // Domain matching: check against allowlist using secure hostname-aware matching
+  const isAllowed = Array.from(allowlist).some((allowed) => matchesDomain(url.hostname, allowed));
+  if (!isAllowed) {
+    return null;
+  }
+
+  // DNS resolution & multi-record IP validation
+  const dnsResult = await resolveAndValidateHostname(url.hostname);
+  if (!dnsResult.allowed) {
+    return null;
+  }
 
   return url.toString();
 }

@@ -9,5 +9,5 @@
     "skipLibCheck": true,
     "resolveJsonModule": true
   },
-  "include": ["src/**/*.ts", "run-agent.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "run-agent.ts", "test/**/*.ts", "demo/**/*.ts"]
 }

@@ -39,25 +39,50 @@ const untrusted_1 = require("./untrusted");
 const sanitizer_1 = require("./sanitizer");
 const logger_1 = require("./logger");
 const credentials_1 = require("./credentials");
-// CHANGED: fetch_url now actually wraps its result as Untrusted and scans
-// it before returning — this was previously dead code (untrusted.ts and
-// sanitizer.ts existed but nothing called them). The scan result is
-// logged either way; a flagged result is still returned to the model
-// (the model is allowed to read suspicious content) but boundary.ts's
-// derivedFromUntrusted check is what actually stops it from being acted
-// on by a privileged tool afterward.
-function createFetchUrlTool(allowlist) {
+const files_1 = require("./files");
+const verification_1 = require("./verification");
+const egress_gateway_1 = require("./network/egress-gateway");
+const classification_1 = require("./classification");
+const provenance_1 = require("./provenance");
+const child_process_1 = require("child_process");
+const util_1 = require("util");
+const path = __importStar(require("path"));
+const execFileAsync = (0, util_1.promisify)(child_process_1.execFile);
+/**
+ * Creates the fetch_url tool powered by the central EgressGateway.
+ * The tool never calls raw fetch() directly. All outbound requests are evaluated against
+ * SSRF filters, IP pinning, redirect validation, and data piggybacking policies.
+ */
+function createFetchUrlTool(allowlistOrGateway) {
+    const gateway = allowlistOrGateway instanceof egress_gateway_1.EgressGateway
+        ? allowlistOrGateway
+        : new egress_gateway_1.EgressGateway({ allowedDomains: Array.from(allowlistOrGateway) });
     return {
         name: "fetch_url",
         allowedInScopes: ["research", "pricing-research"],
         schema: (args) => typeof args.url === "string",
+        jsonSchema: {
+            type: "object",
+            properties: { url: { type: "string" } },
+            required: ["url"],
+            additionalProperties: false,
+        },
         execute: async (args) => {
             const url = args.url;
-            const res = await fetch(url);
-            const rawText = await res.text();
-            const data = (0, untrusted_1.wrapUntrusted)(url, rawText);
+            const res = await gateway.request({
+                method: "GET",
+                url,
+                provenance: (0, provenance_1.createProvenance)("UNTRUSTED", "PUBLIC", "fetch_url"),
+                dataClassification: "PUBLIC",
+            });
+            const data = (0, untrusted_1.wrapUntrusted)(url, res.body);
             const scan = (0, sanitizer_1.scanForInjection)(data);
-            (0, logger_1.logDecision)({ tool: "fetch_url", event: "content_scanned", flagged: scan.flagged, reason: scan.reason });
+            (0, logger_1.logDecision)({
+                tool: "fetch_url",
+                event: "content_scanned",
+                flagged: scan.flagged,
+                reason: scan.reason,
+            });
             return data.content;
         },
     };
@@ -66,33 +91,34 @@ exports.sendEmailTool = {
     name: "send_email",
     allowedInScopes: ["customer-support"],
     schema: (args) => typeof args.to === "string" && typeof args.body === "string",
+    jsonSchema: {
+        type: "object",
+        properties: {
+            to: { type: "string" },
+            body: { type: "string" },
+        },
+        required: ["to", "body"],
+        additionalProperties: false,
+    },
     execute: async (args) => {
-        // CHANGED: pulls a scope-bound credential instead of using a global
-        // identity — a token issued for "customer-support" cannot be reused
-        // by code running under any other scope. See credentials.ts.
         const cred = (0, credentials_1.getCredential)("customer-support");
         console.log(`[send_email] using cred=${cred} to=${args.to} body="${args.body.slice(0, 80)}..."`);
         return "sent";
     },
 };
-// CHANGED: read_billing no longer runs inline in the Node process — it
-// now executes inside the C++ sandbox via native/billing_tool, spawned
-// through native/sandbox_launcher. This is the one tool in this project
-// that gets genuine kernel-level isolation, not just an application-level
-// scope check. See README for why this isn't (yet) true of every tool.
-const child_process_1 = require("child_process");
-const util_1 = require("util");
-const path = __importStar(require("path"));
-const execFileAsync = (0, util_1.promisify)(child_process_1.execFile);
 exports.readBillingTool = {
     name: "read_billing",
     allowedInScopes: ["pricing-research"],
     schema: (args) => typeof args.account_id === "string",
+    jsonSchema: {
+        type: "object",
+        properties: {
+            account_id: { type: "string" },
+        },
+        required: ["account_id"],
+        additionalProperties: false,
+    },
     execute: async (args) => {
-        // NOTE: __dirname here is dist/src (this file's compiled location),
-        // so it takes TWO levels up to reach the project root, then into
-        // native/ — found this by actually running the test and seeing the
-        // "not built" skip message when the binaries were, in fact, built.
         const launcher = path.join(__dirname, "..", "..", "native", "sandbox_launcher");
         const target = path.join(__dirname, "..", "..", "native", "billing_tool");
         try {
@@ -107,36 +133,55 @@ exports.readBillingTool = {
         }
     },
 };
-const files_1 = require("./files");
 exports.readFileTool = {
     name: "read_file",
     allowedInScopes: ["file-access"],
     schema: (args) => typeof args.path === "string",
+    jsonSchema: {
+        type: "object",
+        properties: {
+            path: { type: "string" },
+        },
+        required: ["path"],
+        additionalProperties: false,
+    },
     execute: async (args) => {
         const resolved = (0, files_1.resolveWithinRoot)(args.path);
         if (!resolved)
             throw new Error(`DENIED: path escapes the allowed root`);
         const fs = await Promise.resolve().then(() => __importStar(require("fs/promises")));
         const raw = await fs.readFile(resolved, "utf-8");
-        // CHANGED: previously returned raw content with no scan at all —
-        // fetch_url scanned its output but read_file didn't, even though a
-        // local file can carry the same kind of embedded instruction. Now
-        // both external-content tools log a scan result the same way.
-        const data = (0, untrusted_1.wrapUntrusted)(resolved, raw);
+        // Deterministic data classification
+        const classification = (0, classification_1.classifyPath)(resolved);
+        if (classification === "SECRET" || classification === "CONFIDENTIAL") {
+            classification_1.sessionSecretTracker.registerSecret(raw);
+        }
+        const provenance = (0, provenance_1.createProvenance)("UNTRUSTED", classification, resolved);
+        const data = (0, untrusted_1.wrapUntrusted)(resolved, raw, provenance);
         const scan = (0, sanitizer_1.scanForInjection)(data);
-        (0, logger_1.logDecision)({ tool: "read_file", event: "content_scanned", flagged: scan.flagged, reason: scan.reason });
+        (0, logger_1.logDecision)({
+            tool: "read_file",
+            event: "content_scanned",
+            flagged: scan.flagged,
+            reason: scan.reason,
+            classification,
+        });
         return data.content;
     },
 };
-// NEW: a tool that lets the agent PROPOSE a file change — but the actual
-// write only happens after (1) an injection scan passes and (2) a real
-// human at the terminal explicitly approves it. The model can request
-// this; it cannot make it happen on its own.
-const verification_1 = require("./verification");
 exports.proposeFileUpdateTool = {
     name: "propose_file_update",
     allowedInScopes: ["file-access"],
     schema: (args) => typeof args.path === "string" && typeof args.new_content === "string",
+    jsonSchema: {
+        type: "object",
+        properties: {
+            path: { type: "string" },
+            new_content: { type: "string" },
+        },
+        required: ["path", "new_content"],
+        additionalProperties: false,
+    },
     execute: async (args) => {
         const resolved = (0, files_1.resolveWithinRoot)(args.path);
         if (!resolved)
