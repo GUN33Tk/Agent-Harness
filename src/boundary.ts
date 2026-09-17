@@ -64,6 +64,14 @@ export class ExecutionBoundary {
     return this.sessionManager;
   }
 
+  /**
+   * Safe read-only accessor for the session security context.
+   * ExecutionBoundary / SessionManager is the authoritative deterministic enforcement layer.
+   */
+  getSessionContext(sessionId: string = "session-default"): Readonly<SessionSecurityContext> {
+    return this.sessionManager.getSession(sessionId);
+  }
+
   async run(call: ToolCall): Promise<ToolCallResult> {
     const sessionId = call.sessionId ?? "session-default";
     const agentId = call.agentId ?? "agent-main";

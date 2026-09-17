@@ -33,6 +33,13 @@ class ExecutionBoundary {
     getSessionManager() {
         return this.sessionManager;
     }
+    /**
+     * Safe read-only accessor for the session security context.
+     * ExecutionBoundary / SessionManager is the authoritative deterministic enforcement layer.
+     */
+    getSessionContext(sessionId = "session-default") {
+        return this.sessionManager.getSession(sessionId);
+    }
     async run(call) {
         const sessionId = call.sessionId ?? "session-default";
         const agentId = call.agentId ?? "agent-main";

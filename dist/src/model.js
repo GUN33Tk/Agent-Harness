@@ -6,16 +6,24 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.ModelDrivenCaller = void 0;
 const groq_sdk_1 = __importDefault(require("groq-sdk"));
 const provenance_1 = require("./provenance");
-const client = new groq_sdk_1.default({ apiKey: process.env.GROQ_API_KEY });
-const MODEL = process.env.GROQ_MODEL ?? "openai/gpt-oss-120b";
+function getGroqClient() {
+    const apiKey = process.env.GROQ_API_KEY || process.env.LLM_API_KEY;
+    if (!apiKey) {
+        throw new Error("GROQ_API_KEY (or LLM_API_KEY) environment variable is required to run the agent with a live LLM.");
+    }
+    return new groq_sdk_1.default({ apiKey });
+}
+const MODEL = process.env.GROQ_MODEL ?? process.env.LLM_MODEL ?? "openai/gpt-oss-120b";
 class ModelDrivenCaller {
-    constructor(systemPrompt, userQuery, tools, initialProvenance) {
+    constructor(systemPrompt, userQuery, tools, initialProvenance, sessionId = "session-default") {
         this.tools = tools;
+        this.sessionId = sessionId;
         this.messages = [];
         this.lastToolCallId = null;
-        // Persistent provenance & data classification state across the entire conversation
-        // Fixes the single-step reset bug: once untrusted or secret data enters the context,
-        // subsequent tool calls remain tainted unless explicitly cleared by verification.
+        // Persistent provenance & data classification state across the entire conversation.
+        // Note on architecture:
+        // - ModelDrivenCaller tracks local conversational context to construct informed tool-call proposals.
+        // - ExecutionBoundary / SessionManager is the single deterministic enforcement authority.
         this.sessionProvenance = (0, provenance_1.createProvenance)("TRUSTED", "PUBLIC", "user-instruction");
         this.sessionClassification = "PUBLIC";
         this.finalAnswer = null;
@@ -51,6 +59,7 @@ class ModelDrivenCaller {
                 content: lastObs,
             });
         }
+        const client = getGroqClient();
         const response = await client.chat.completions.create({
             model: MODEL,
             messages: this.messages,
@@ -86,6 +95,7 @@ class ModelDrivenCaller {
             derivedFromUntrusted: this.sessionProvenance.trust !== "TRUSTED",
             provenance: this.sessionProvenance,
             dataClassification: this.sessionClassification,
+            sessionId: this.sessionId,
         };
         return call;
     }

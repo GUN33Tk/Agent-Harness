@@ -2,8 +2,15 @@ import Groq from "groq-sdk";
 import { ToolCall } from "./boundary";
 import { Provenance, DataClassification, createProvenance, combineProvenance, combineClassification } from "./provenance";
 
-const client = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const MODEL = process.env.GROQ_MODEL ?? "openai/gpt-oss-120b";
+function getGroqClient(): Groq {
+  const apiKey = process.env.GROQ_API_KEY || process.env.LLM_API_KEY;
+  if (!apiKey) {
+    throw new Error("GROQ_API_KEY (or LLM_API_KEY) environment variable is required to run the agent with a live LLM.");
+  }
+  return new Groq({ apiKey });
+}
+
+const MODEL = process.env.GROQ_MODEL ?? process.env.LLM_MODEL ?? "openai/gpt-oss-120b";
 
 export interface ModelTool {
   name: string;
@@ -18,9 +25,10 @@ export class ModelDrivenCaller {
   private messages: ChatMessage[] = [];
   private lastToolCallId: string | null = null;
 
-  // Persistent provenance & data classification state across the entire conversation
-  // Fixes the single-step reset bug: once untrusted or secret data enters the context,
-  // subsequent tool calls remain tainted unless explicitly cleared by verification.
+  // Persistent provenance & data classification state across the entire conversation.
+  // Note on architecture:
+  // - ModelDrivenCaller tracks local conversational context to construct informed tool-call proposals.
+  // - ExecutionBoundary / SessionManager is the single deterministic enforcement authority.
   private sessionProvenance: Provenance = createProvenance("TRUSTED", "PUBLIC", "user-instruction");
   private sessionClassification: DataClassification = "PUBLIC";
 
@@ -30,7 +38,8 @@ export class ModelDrivenCaller {
     systemPrompt: string,
     userQuery: string,
     private tools: ModelTool[],
-    initialProvenance?: Provenance
+    initialProvenance?: Provenance,
+    private sessionId: string = "session-default"
   ) {
     if (initialProvenance) {
       this.sessionProvenance = initialProvenance;
@@ -73,6 +82,7 @@ export class ModelDrivenCaller {
       });
     }
 
+    const client = getGroqClient();
     const response = await client.chat.completions.create(
       {
         model: MODEL,
@@ -121,6 +131,7 @@ export class ModelDrivenCaller {
       derivedFromUntrusted: this.sessionProvenance.trust !== "TRUSTED",
       provenance: this.sessionProvenance,
       dataClassification: this.sessionClassification,
+      sessionId: this.sessionId,
     };
 
     return call;

@@ -65,12 +65,25 @@ async function main() {
   console.log(caller.finalAnswer ?? "(model ended without a final text answer)");
 
   // --- Human-review-before-persistence demo ---
-  const finalText = observations.join(" ");
-  const verdict = review(finalText);
+  // Candidate summary is the model's synthesized final answer (NOT raw tool observations)
+  const candidateSummary = caller.finalAnswer ?? "";
+  const textToReview = candidateSummary.trim().length > 0 ? candidateSummary : observations.join(" ");
+  const verdict = review(textToReview);
   console.log(`[verification] review verdict: ${verdict.verdict}`);
 
-  const wasUntrusted = finalText.includes("attacker") || finalText.includes("ignore all previous");
-  const memResult = remember("config", "last_session_summary", finalText, wasUntrusted);
+  // Query authoritative session security context from ExecutionBoundary
+  const sessionContext = boundary.getSessionContext("session-default");
+  const isUntrusted = sessionContext.provenance.trust !== "TRUSTED";
+  const isSensitive = sessionContext.classification === "SECRET" || sessionContext.classification === "CONFIDENTIAL";
+  const wasUntrusted = isUntrusted || isSensitive || verdict.flagged;
+
+  const memResult = remember(
+    "config",
+    "last_session_summary",
+    candidateSummary,
+    wasUntrusted,
+    sessionContext.classification
+  );
   console.log(`[memory] persistence result: ${memResult ?? "stored"}`);
 }
 
